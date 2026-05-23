@@ -3,7 +3,7 @@ import json
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -33,7 +33,7 @@ class DHCPConfig:
 
 
 class DHCPServerCore:
-    def __init__(self, config: DHCPConfig | None = None) -> None:
+    def __init__(self, config: Optional[DHCPConfig] = None) -> None:
         self.config = config or DHCPConfig()
         self._leases: Dict[str, str] = {}
 
@@ -65,7 +65,7 @@ class DHCPServerCore:
         return dict(self._leases)
 
 
-def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: DHCPServerCore | None = None) -> ThreadingHTTPServer:
+def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: Optional[DHCPServerCore] = None) -> ThreadingHTTPServer:
     dhcp_core = core or DHCPServerCore()
 
     class DHCPAPIHandler(BaseHTTPRequestHandler):
@@ -146,7 +146,7 @@ def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: DHCPServe
 
         def log_message(self, message_format: str, *args: object) -> None:
             """Silence default request logs in all environments."""
-            return
+            pass
 
     return ThreadingHTTPServer((host, port), DHCPAPIHandler)
 

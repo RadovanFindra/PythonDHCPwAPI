@@ -49,7 +49,7 @@ class DHCPAPITests(unittest.TestCase):
         status, data = self._request("GET", "/config")
         self.assertEqual(status, 200)
         self.assertIn("options", data)
-        self.assertIn("6", {str(k) for k in data["options"].keys()})
+        self.assertIn("6", data["options"])
 
     def test_update_option_6_dns_servers(self):
         status, data = self._request("PUT", "/options/6", {"dns_servers": ["4.4.4.4", "8.8.8.8"]})
