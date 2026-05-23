@@ -38,7 +38,7 @@ class DHCPServerCore:
         self._leases: Dict[str, str] = {}
 
     @staticmethod
-    def _normalize_mac(mac: str) -> str:
+    def normalize_mac(mac: str) -> str:
         return mac.strip().lower()
 
     def _pool_ips(self) -> List[str]:
@@ -49,7 +49,7 @@ class DHCPServerCore:
         return [str(ipaddress.ip_address(ip)) for ip in range(start, end + 1)]
 
     def allocate_ip(self, mac: str) -> str:
-        normalized = self._normalize_mac(mac)
+        normalized = self.normalize_mac(mac)
         if normalized in self._leases:
             return self._leases[normalized]
 
@@ -125,7 +125,7 @@ def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: DHCPServe
                 if not mac:
                     raise ValueError("Missing mac")
                 ip = dhcp_core.allocate_ip(mac)
-                self._respond(HTTPStatus.CREATED, {"mac": DHCPServerCore._normalize_mac(mac), "ip": ip})
+                self._respond(HTTPStatus.CREATED, {"mac": dhcp_core.normalize_mac(mac), "ip": ip})
             except (ValueError, RuntimeError) as exc:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
