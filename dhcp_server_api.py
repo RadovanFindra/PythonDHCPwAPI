@@ -103,7 +103,7 @@ def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: Optional[
                         "pool_end": cfg.pool_end,
                         "router": cfg.router,
                         "lease_time_seconds": cfg.lease_time_seconds,
-                        "options": dhcp_core.config.dhcp_options(),
+                        "options": {str(key): value for key, value in dhcp_core.config.dhcp_options().items()},
                     },
                 )
                 return
