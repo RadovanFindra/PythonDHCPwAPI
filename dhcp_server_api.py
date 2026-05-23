@@ -124,9 +124,8 @@ def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: DHCPServe
                 mac = str(payload.get("mac", "")).strip()
                 if not mac:
                     raise ValueError("Missing mac")
-                normalized_mac = DHCPServerCore._normalize_mac(mac)
-                ip = dhcp_core.allocate_ip(normalized_mac)
-                self._respond(HTTPStatus.CREATED, {"mac": normalized_mac, "ip": ip})
+                ip = dhcp_core.allocate_ip(mac)
+                self._respond(HTTPStatus.CREATED, {"mac": DHCPServerCore._normalize_mac(mac), "ip": ip})
             except (ValueError, RuntimeError) as exc:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
@@ -145,7 +144,7 @@ def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: DHCPServe
             except ValueError as exc:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+        def log_message(self, message_format: str, *args: object) -> None:
             """Silence default request logs to keep API/test output clean."""
             return
 

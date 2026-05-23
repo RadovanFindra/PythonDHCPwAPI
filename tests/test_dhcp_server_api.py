@@ -58,9 +58,9 @@ class DHCPAPITests(unittest.TestCase):
         self.assertEqual(data["dns_servers"], ["4.4.4.4", "8.8.8.8"])
 
     def test_allocate_lease_via_api(self):
-        status, data = self._request("POST", "/leases", {"mac": "11:22:33:44:55:66"})
+        status, data = self._request("POST", "/leases", {"mac": "AA:BB:CC:44:55:66"})
         self.assertEqual(status, 201)
-        self.assertEqual(data["mac"], "11:22:33:44:55:66")
+        self.assertEqual(data["mac"], "aa:bb:cc:44:55:66")
         self.assertTrue(data["ip"].startswith("192.168.1."))
 
 
