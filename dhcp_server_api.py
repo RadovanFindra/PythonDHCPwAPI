@@ -145,7 +145,7 @@ def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: Optional[
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         def log_message(self, message_format: str, *args: object) -> None:
-            """Silence default request logs in all environments."""
+            """Silence default request logs; remove this override to re-enable logging."""
             pass
 
     return ThreadingHTTPServer((host, port), DHCPAPIHandler)

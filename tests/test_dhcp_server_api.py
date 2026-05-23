@@ -5,6 +5,8 @@ from http.client import HTTPConnection
 
 from dhcp_server_api import DHCPConfig, DHCPServerCore, create_api_server
 
+THREAD_SHUTDOWN_TIMEOUT = 2
+
 
 class DHCPServerCoreTests(unittest.TestCase):
     def test_option_6_dns_servers_present(self):
@@ -29,7 +31,7 @@ class DHCPAPITests(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
-        self.thread.join(timeout=2)
+        self.thread.join(timeout=THREAD_SHUTDOWN_TIMEOUT)
 
     def _request(self, method, path, payload=None):
         host, port = self.server.server_address
