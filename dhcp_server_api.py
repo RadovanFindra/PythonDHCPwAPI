@@ -145,7 +145,7 @@ def create_api_server(host: str = "127.0.0.1", port: int = 8000, core: DHCPServe
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
         def log_message(self, message_format: str, *args: object) -> None:
-            """Silence default request logs to keep API/test output clean."""
+            """Silence default request logs in all environments."""
             return
 
     return ThreadingHTTPServer((host, port), DHCPAPIHandler)

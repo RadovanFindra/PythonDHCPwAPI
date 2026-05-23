@@ -43,7 +43,7 @@ class DHCPAPITests(unittest.TestCase):
         response = conn.getresponse()
         data = response.read().decode("utf-8")
         conn.close()
-        return response.status, json.loads(data)
+        return response.status, json.loads(data) if data else {}
 
     def test_get_config_includes_option_6(self):
         status, data = self._request("GET", "/config")
