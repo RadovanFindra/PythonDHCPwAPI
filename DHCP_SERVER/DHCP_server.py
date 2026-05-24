@@ -6,7 +6,7 @@ Spúšťa súčasne:
 
 Spustenie:
   sudo python DHCP_server.py
-  sudo python DHCP_server.py --port 8080 --start 192.168.1.100 --end 192.168.1.200
+  sudo python DHCP_server.py --static-file /etc/dhcp/static_leases.json
   python DHCP_server.py --udp-port 1067    # testovanie bez sudo
 """
 
@@ -19,18 +19,18 @@ from DHCP_protocol import DHCPUDPServer
 
 
 def parse_args(argv: list) -> dict:
-    """Jednoduchý parser argumentov príkazového riadku bez argparse."""
     args = {
-        "port":       8080,
-        "host":       "192.168.1.1",
-        "pool_start": "192.168.1.100",
-        "pool_end":   "192.168.1.200",
-        "gateway":    "192.168.1.1",
-        "dns":        "8.8.8.8",
-        "lease_time": 3600,
-        "udp_host":   "192.168.1.1",
-        "udp_port":   67,
-        "interface": "ens19",
+        "port":        8080,
+        "host":        "192.168.1.1",
+        "pool_start":  "192.168.1.100",
+        "pool_end":    "192.168.1.200",
+        "gateway":     "192.168.1.1",
+        "dns":         "8.8.8.8",
+        "lease_time":  3600,
+        "udp_host":    "0.0.0.0",
+        "udp_port":    67,
+        "server_ip":   "192.168.1.1", #API
+        "static_file": "static_leases.json",   # ← nové
     }
     i = 1
     while i < len(argv):
@@ -48,7 +48,7 @@ def parse_args(argv: list) -> dict:
     return args
 
 
-def print_banner(config, pool, udp_host: str, udp_port: int):
+def print_banner(config, pool, udp_host: str, udp_port: int, static_file: str):
     stats = pool.pool_stats()
     print("=" * 58)
     print("   DHCP Server s REST API  –  Python (bez frameworkov)")
@@ -61,19 +61,23 @@ def print_banner(config, pool, udp_host: str, udp_port: int):
     print(f"  Subnet maska:   {config.subnet_mask}")
     print(f"  Pool:           {stats['start_ip']} – {stats['end_ip']}")
     print(f"  Celkový pool:   {stats['total']} adries")
+    print(f"  Statické lease: {stats['static']} (súbor: {static_file})")
     print(f"  Lease time:     {config.default_lease_time}s")
     print("=" * 58)
     print("  REST API endpointy:")
-    print("  GET    /health          – stav servera")
-    print("  GET    /config          – konfigurácia")
-    print("  POST   /config          – zmena konfigurácie")
-    print("  GET    /leases          – aktívne lease záznamy")
-    print("  GET    /pool            – štatistiky poolu")
-    print("  POST   /lease/assign    – pridelenie adresy")
-    print("  POST   /lease/release   – uvoľnenie adresy")
-    print("  GET    /options         – DHCP options")
-    print("  POST   /options         – nastavenie option")
-    print("  DELETE /options/<code>  – odstránenie option")
+    print("  GET    /health               – stav servera")
+    print("  GET    /config               – konfigurácia")
+    print("  POST   /config               – zmena konfigurácie")
+    print("  GET    /leases               – aktívne lease záznamy")
+    print("  GET    /pool                 – štatistiky poolu")
+    print("  POST   /lease/assign         – pridelenie adresy")
+    print("  POST   /lease/release        – uvoľnenie adresy")
+    print("  GET    /options              – DHCP options")
+    print("  POST   /options              – nastavenie option")
+    print("  DELETE /options/<code>       – odstránenie option")
+    print("  GET    /leases/static        – statické lease")
+    print("  POST   /leases/static        – pridanie statického lease")
+    print("  DELETE /leases/static/<mac>  – odstránenie statického lease")
     print("=" * 58)
     print("  DHCP UDP: DISCOVER → OFFER → REQUEST → ACK/NAK")
     print("  Stlačte Ctrl+C pre ukončenie.")
@@ -86,6 +90,7 @@ def main():
     # --- Konfigurácia ---
     config = DHCPConfig()
     config.server_port        = args["port"]
+    config.server_ip          = args["server_ip"]
     config.gateway            = args["gateway"]
     config.dns_servers        = [args["dns"]]
     config.pool_start         = args["pool_start"]
@@ -97,6 +102,7 @@ def main():
         start_ip=config.pool_start,
         end_ip=config.pool_end,
         default_lease_time=config.default_lease_time,
+        static_leases_file=args["static_file"],   # ← nové
     )
 
     # --- UDP DHCP server ---
@@ -104,13 +110,12 @@ def main():
     udp_server.start_in_thread(
         host=args["udp_host"],
         port=args["udp_port"],
-        interface=args["interface"],
     )
 
     # --- REST API server (blokuje hlavné vlákno) ---
     api = DHCPRestAPI(config=config, pool=pool)
 
-    print_banner(config, pool, args["udp_host"], args["udp_port"])
+    print_banner(config, pool, args["udp_host"], args["udp_port"], args["static_file"])
 
     try:
         api.start(host=args["host"], port=args["port"])
