@@ -30,6 +30,7 @@ def parse_args(argv: list) -> dict:
         "lease_time": 3600,
         "udp_host":   "192.168.1.1",
         "udp_port":   67,
+        "interface": "ens19",
     }
     i = 1
     while i < len(argv):
@@ -103,6 +104,7 @@ def main():
     udp_server.start_in_thread(
         host=args["udp_host"],
         port=args["udp_port"],
+        interface=args["interface"],
     )
 
     # --- REST API server (blokuje hlavné vlákno) ---

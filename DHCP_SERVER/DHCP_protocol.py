@@ -255,11 +255,18 @@ class DHCPUDPServer:
         self._sock    = None
         self._running = False
 
-    def start(self, host: str = "0.0.0.0", port: int = 67):
+    def start(self, host: str = "0.0.0.0", port: int = 67, interface: str = None):
         try:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            if interface:
+                self._sock.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_BINDTODEVICE,
+                    interface.encode()
+                )
+                 print(f"[DHCP UDP] Rozhranie: {interface}")
             self._sock.bind((host, port))
             self._running = True
             print(f"[DHCP UDP] Počúva na {host}:{port}/UDP")
@@ -289,8 +296,8 @@ class DHCPUDPServer:
         if self._sock:
             self._sock.close()
 
-    def start_in_thread(self, host: str = "0.0.0.0", port: int = 67):
-        t = threading.Thread(target=self.start, args=(host, port), daemon=True)
+    def start_in_thread(self, host: str = "0.0.0.0", port: int = 67, interface: str = None):
+        t = threading.Thread(target=self.start, args=(host, port, interface), daemon=True)
         t.start()
         return t
 
