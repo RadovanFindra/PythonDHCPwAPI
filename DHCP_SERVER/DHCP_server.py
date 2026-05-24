@@ -6,6 +6,9 @@ Spustenie: python server.py [--port 8080] [--start 192.168.1.100] [--end 192.168
 import sys
 import time
 
+from config import DHCP_config
+from pool import DHCP_pool
+from rest_api import REST_API
 
 def parse_args(argv: list) -> dict:
     """Jednoduchý parser argumentov príkazového riadku bez argparse."""
@@ -64,13 +67,10 @@ def print_banner(config, pool):
 
 
 def main():
-    from config import DHCPConfig
-    from pool import DHCPPool
-    from rest_api import DHCPRestAPI
-
+    
     args = parse_args(sys.argv)
 
-    config = DHCPConfig()
+    config = DHCP_config()
     config.server_port        = args["port"]
     config.gateway            = args["gateway"]
     config.dns_servers        = [args["dns"]]
@@ -78,13 +78,13 @@ def main():
     config.pool_end           = args["pool_end"]
     config.default_lease_time = args["lease_time"]
 
-    pool = DHCPPool(
+    pool = DHCP_pool(
         start_ip=config.pool_start,
         end_ip=config.pool_end,
         default_lease_time=config.default_lease_time,
     )
 
-    api = DHCPRestAPI(config=config, pool=pool)
+    api = REST_API(config=config, pool=pool)
 
     print_banner(config, pool)
 
