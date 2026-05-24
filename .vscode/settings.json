@@ -1,0 +1,7 @@
+{
+    "python.analysis.extraPaths": [
+        "./DHCP_SERVER/DHCP_",
+        "./DHCP_SERVER/DHCP_"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:system"
+}

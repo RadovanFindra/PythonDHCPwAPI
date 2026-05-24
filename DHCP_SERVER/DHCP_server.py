@@ -11,11 +11,9 @@ Spustenie:
 import sys
 import threading
 
-from DHCP_config   import DHCPConfig
-from DHCP_pool     import DHCPPool
-from REST_API      import DHCPRestAPI
-from DHCP_protocol import DHCPUDPServer
-
+from config import DHCP_config
+from pool import DHCP_pool
+from rest_api import REST_API
 
 def parse_args(argv: list) -> dict:
     args = {
@@ -92,17 +90,13 @@ def main():
     config.pool_end           = args["pool_end"]
     config.default_lease_time = args["lease_time"]
 
-    # Pool je zdieľaný – UDP aj REST API pracujú s tými istými lease záznamami
-    pool = DHCPPool(
+    pool = DHCP_pool(
         start_ip=config.pool_start,
         end_ip=config.pool_end,
         default_lease_time=config.default_lease_time,
     )
 
-    udp_server  = DHCPUDPServer(config=config, pool=pool)
-    udp_enabled = not args["no_udp"]
-    if udp_enabled:
-        udp_server.start_in_thread()
+    api = REST_API(config=config, pool=pool)
 
     api = DHCPRestAPI(config=config, pool=pool)
     print_banner(config, pool, udp_enabled)
