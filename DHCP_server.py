@@ -1,0 +1,2 @@
+#TEST
+print('Ahoj svet.')
