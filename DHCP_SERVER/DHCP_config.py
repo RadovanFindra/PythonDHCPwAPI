@@ -3,7 +3,7 @@ config.py – Konfigurácia DHCP servera a DHCP options.
 Bez externých knižníc.
 """
 
-from pool import validate_ip
+from DHCP_pool import validate_ip
 
 
 # Najčastejšie DHCP options (RFC 2132) – kód: popis
