@@ -132,7 +132,7 @@ class DHCPRestAPI:
         r.add("DELETE", "/options/<code>",          self._delete_option)
         r.add("GET",    "/leases/static",           self._get_static)
         r.add("POST",   "/leases/static",           self._post_static)
-        r.add("DELETE", "/leases/static/<mac>",     self._delete_static)
+        r.add("DELETE", "/leases/static/<id>", self._delete_static)
 
     def start(self, host: str = "0.0.0.0", port: int = None):
         port = port or self.config.server_port
@@ -274,14 +274,21 @@ class DHCPRestAPI:
         body = req.get("body")
         if not isinstance(body, dict):
             return build_response(400, {"error": "Telo požiadavky musí byť JSON objekt"})
+        
         client_id = body.get("client_id")
-        ip = body.get("ip")
-        if client_id:
+        ip        = body.get("ip")
+        lease_id  = body.get("id")
+
+        if lease_id is not None:
+            # Uvoľnenie podľa ID
+            released = self.pool.release_by_id(int(lease_id))
+        elif client_id:
             released = self.pool.release(str(client_id))
         elif ip:
             released = self.pool.release_by_ip(ip)
         else:
-            return build_response(400, {"error": "Chýba 'client_id' alebo 'ip'"})
+            return build_response(400, {"error": "Chýba 'id', 'client_id' alebo 'ip'"})
+
         if released:
             return build_response(200, {"message": "Adresa uvoľnená"})
         return build_response(404, {"error": "Lease nenájdená"})
@@ -347,9 +354,13 @@ class DHCPRestAPI:
         })
 
     def _delete_static(self, req, params):
-        mac = params.get("mac", "").replace("%3A", ":").replace("%3a", ":")
-        if not mac:
-            return build_response(400, {"error": "Chýba MAC adresa"})
-        if self.pool.remove_static(mac):
-            return build_response(200, {"message": f"Statický lease {mac.upper()} odstránený"})
-        return build_response(404, {"error": f"Statický lease {mac.upper()} nenájdený"})
+        try:
+            lease_id = int(params.get("id", ""))
+        except (ValueError, TypeError):
+            return build_response(400, {"error": "ID musí byť celé číslo"})
+        if self.pool.remove_static(lease_id):
+            return build_response(200, {
+                "message": f"Statický lease #{lease_id} odstránený",
+                "static_leases": self.pool.all_static_leases(),
+            })
+        return build_response(404, {"error": f"Statický lease #{lease_id} nenájdený"})
