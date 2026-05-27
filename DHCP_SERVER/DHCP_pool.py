@@ -124,10 +124,13 @@ class DHCPPool:
             
     def _save_static_leases(self):
         try:
-            with open(self._static_file, "w", encoding="utf-8") as f:
+            tmp_file = self._static_file + ".tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(self._static_leases, f, indent=2, ensure_ascii=False)
+            import os
+            os.replace(tmp_file, self._static_file) # Atomická operácia
         except OSError as e:
-            print(f"[Pool] Chyba pri ukladaní {self._static_file}: {e}")
+            print(f"[Pool] Chyba pri ukladaní: {e}")
 
     # ------------------------------------------------------------------
     # Správa statických lease
@@ -139,33 +142,47 @@ class DHCPPool:
             return f"Neplatná IP adresa: {ip}"
         if not self._ip_in_range(ip):
             return f"IP {ip} nie je v rozsahu poolu ({self.start_ip} – {self.end_ip})"
-        # Kontrola duplicity
-        for entry in self._static_leases:
-            if entry["ip"] == ip and entry["mac"] != mac:
-                return f"IP {ip} je už priradená MAC {entry['mac']}"
-            if entry["mac"] == mac:
-                return f"MAC {mac} už má statický lease → {entry['ip']}"
-        self._static_leases.append({"mac": mac, "ip": ip})
-        self._save_static_leases()
+        
+        # --- ZAMKNUTIE PRE THREAD SAFETY ---
+        with self._lock:
+            # Kontrola duplicity
+            for entry in self._static_leases:
+                if entry["ip"] == ip and entry["mac"] != mac:
+                    return f"IP {ip} je už priradená MAC {entry['mac']}"
+                if entry["mac"] == mac:
+                    return f"MAC {mac} už má statický lease → {entry['ip']}"
+            
+            self._static_leases.append({"mac": mac, "ip": ip})
+            self._save_static_leases()
+        # -----------------------------------
+
         print(f"[Pool] Statický lease pridaný #{len(self._static_leases)}: {mac} → {ip}")
         return None
 
     def remove_static(self, id: int) -> bool:
         """Odstráni statický lease podľa poradového čísla (1-based). Zoznam sa posunie."""
         idx = id - 1
-        if idx < 0 or idx >= len(self._static_leases):
-            return False
-        entry = self._static_leases.pop(idx)   # ← posunie zoznam automaticky
-        self._save_static_leases()
+        
+        # --- ZAMKNUTIE PRE THREAD SAFETY ---
+        with self._lock:
+            if idx < 0 or idx >= len(self._static_leases):
+                return False
+            entry = self._static_leases.pop(idx)   # ← posunie zoznam automaticky
+            self._save_static_leases()
+        # -----------------------------------
+
         print(f"[Pool] Statický lease #{id} odstránený: {entry['mac']} → {entry['ip']}")
         return True
 
     def all_static_leases(self) -> list:
         """Vráti zoznam so ID začínajúcim od 1."""
-        return [
-            {"id": i + 1, "mac": e["mac"], "ip": e["ip"]}
-            for i, e in enumerate(self._static_leases)
-        ]
+        # --- ZAMKNUTIE PRE THREAD SAFETY ---
+        with self._lock:
+            return [
+                {"id": i + 1, "mac": e["mac"], "ip": e["ip"]}
+                for i, e in enumerate(self._static_leases)
+            ]
+        # -----------------------------------
         
     def _get_static_ip(self, client_id: str) -> str | None:
         """Vyhľadá statickú IP podľa MAC adresy."""
@@ -183,17 +200,31 @@ class DHCPPool:
         with self._lock:
             self._expire_leases()
 
+            # 1. KONTROLA STATICKÉHO LEASE
             static_ip = self._get_static_ip(client_id)
             if static_ip:
+                # --- OCHRANA PROTI ZOMBIFIKÁCII / IP LEAKU ---
+                # Ak mal klient doteraz pridelenú inú IP (napr. starú dynamickú), 
+                # musíme ju kompletne vymazať, aby nezostala visieť v systéme.
+                old_ip = self._client_map.get(client_id)
+                if old_ip and old_ip != static_ip:
+                    self._leases.pop(old_ip, None)
+                    self._client_map.pop(client_id, None)
+                # ----------------------------------------------
+
                 lease = self._leases.get(static_ip)
                 if lease and lease.client_id == client_id:
                     lease.renew()
                     return lease
+                
+                # Ak túto statickú IP držal niekto iný (napr. starý expirovaný lease), uvoľníme ju
                 if static_ip in self._leases:
                     old_lease = self._leases.pop(static_ip)
                     self._client_map.pop(old_lease.client_id, None)
+                    
                 return self._create_lease(client_id, static_ip)
 
+            # 2. EXISTUJÚCI AKTÍVNY DYNAMICKÝ LEASE
             if client_id in self._client_map:
                 existing_ip = self._client_map[client_id]
                 lease = self._leases.get(existing_ip)
@@ -201,14 +232,17 @@ class DHCPPool:
                     lease.renew()
                     return lease
 
+            # Množina všetkých IP adries, ktoré sú rezervované staticky
             reserved = {e["ip"] for e in self._static_leases}
 
+            # 3. VYHOVENIE POŽIADAVKE KLIENTA (Requested IP Option 50)
             if requested_ip and validate_ip(requested_ip):
                 if (self._ip_in_range(requested_ip)
                         and requested_ip not in self._leases
                         and requested_ip not in reserved):
                     return self._create_lease(client_id, requested_ip)
 
+            # 4. PRIDELENIE PRVEJ VOĽNEJ DYNAMICKEJ IP Z POOLU
             for n in range(self._start_int, self._end_int + 1):
                 ip = int_to_ip(n)
                 if ip in reserved or ip in self._leases:
@@ -224,7 +258,7 @@ class DHCPPool:
             if ip:
                 self._leases.pop(ip, None)
                 return True
-            return False,
+            return False
     
     def release_by_id(self, lease_id: int) -> bool:
         with self._lock:

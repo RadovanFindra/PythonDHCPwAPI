@@ -266,7 +266,7 @@ class DHCPUDPServer:
                     socket.SO_BINDTODEVICE,
                     interface.encode()
                 )
-                 print(f"[DHCP UDP] Rozhranie: {interface}")
+                print(f"[DHCP UDP] Rozhranie: {interface}")
             self._sock.bind((host, port))
             self._running = True
             print(f"[DHCP UDP] Počúva na {host}:{port}/UDP")
@@ -325,7 +325,7 @@ class DHCPUDPServer:
         if req_opt:
             requested_ip = req_opt[0]
 
-        lease = self.pool.assign(pkt["client_id"], requested_ip)
+        lease = self.pool.assign(pkt["mac"], requested_ip)
         if lease is None:
             print(f"[DHCP UDP] OFFER: pool plný, nemôžem obsluhovať {pkt['client_id']}")
             return
@@ -360,7 +360,7 @@ class DHCPUDPServer:
             self.pool.release(client_id)
             return
 
-        lease = self.pool.assign(client_id, requested_ip)
+        lease = self.pool.assign(pkt["mac"], requested_ip)
 
         if lease and (requested_ip is None or lease.ip == requested_ip):
             reply = build_dhcp_packet(
@@ -389,7 +389,7 @@ class DHCPUDPServer:
 
     def _handle_release(self, pkt: dict):
         """RELEASE – klient vracia adresu späť do poolu."""
-        self.pool.release(pkt["client_id"])
+        self.pool.release(pkt["mac"])
         print(f"[DHCP UDP] RELEASE od {pkt['client_id']} ({pkt['ciaddr']})")
 
     def _handle_inform(self, pkt: dict):
