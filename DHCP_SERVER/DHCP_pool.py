@@ -97,7 +97,7 @@ class DHCPPool:
 
         # Statické lease – MAC -> IP
         self._static_file = static_leases_file
-        self._static_leases: dict = {}
+        self._static_leases: list = []
         self._load_static_leases()
 
     # ------------------------------------------------------------------
@@ -111,17 +111,22 @@ class DHCPPool:
         try:
             with open(self._static_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, list):
+            if isinstance(data, list):  # ← musí byť list
                 self._static_leases = [
                     {"mac": normalize_mac(e["mac"]), "ip": e["ip"]}
                     for e in data if "mac" in e and "ip" in e
                 ]
-                print(f"[Pool] Načítaných {len(self._static_leases)} statických lease z {self._static_file}")
-                for i, e in enumerate(self._static_leases, 1):
-                    print(f"[Pool]   {i}. {e['mac']} → {e['ip']}")
+            elif isinstance(data, dict):  # ← starý formát – automatická konverzia
+                self._static_leases = [
+                    {"mac": normalize_mac(mac), "ip": ip}
+                    for mac, ip in data.items()
+                ]
+                self._save_static_leases()  # ← uložíme v novom formáte
+                print(f"[Pool] Konvertovaný starý formát → nový zoznam")
+            print(f"[Pool] Načítaných {len(self._static_leases)} statických lease")
         except (json.JSONDecodeError, OSError) as e:
             print(f"[Pool] Chyba pri načítaní {self._static_file}: {e}")
-            
+
     def _save_static_leases(self):
         try:
             tmp_file = self._static_file + ".tmp"

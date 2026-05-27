@@ -159,10 +159,11 @@ def _parse_options(data: bytes) -> dict:
 
 
 def _extract_client_id(options: dict, mac: str) -> str:
-    """Preferujeme option 61 (client ID), inak použijeme MAC adresu."""
-    raw = options.get(OPT_CLIENT_ID)
-    if raw and isinstance(raw[0], bytes) and len(raw[0]) > 1:
-        return mac_to_str(raw[0][1:], len(raw[0]) - 1)
+    """
+    Pre náš server je identita klienta vždy čistá MAC adresa z chaddr.
+    Option 61 (client identifier) ignorujeme, lebo môže obsahovať rôzne
+    extra bajty (napr. DUID), čo robí bordel v client_id.
+    """
     return mac
 
 
@@ -325,26 +326,29 @@ class DHCPUDPServer:
         if req_opt:
             requested_ip = req_opt[0]
 
+        # kľúč v poole = čistá MAC
         lease = self.pool.assign(pkt["mac"], requested_ip)
         if lease is None:
-            print(f"[DHCP UDP] OFFER: pool plný, nemôžem obsluhovať {pkt['client_id']}")
+            print(f"[DHCP UDP] OFFER: pool plný, nemôžem obsluhovať {pkt['mac']}")
             return
 
         reply = build_dhcp_packet(
-            msg_type   = DHCPOFFER,
-            xid        = pkt["xid"],
-            chaddr_raw = pkt["chaddr_raw"],
-            yiaddr     = lease.ip,
-            server_ip  = self.config.server_ip,
-            config     = self.config,
-            lease_time = lease.lease_time,
+            msg_type=DHCPOFFER,
+            xid=pkt["xid"],
+            chaddr_raw=pkt["chaddr_raw"],
+            yiaddr=lease.ip,
+            server_ip=self.config.server_ip,
+            config=self.config,
+            lease_time=lease.lease_time,
         )
         self._send_reply(reply, pkt)
-        print(f"[DHCP UDP] OFFER → {lease.ip} pre {pkt['client_id']}")
+        print(f"[DHCP UDP] OFFER → {lease.ip} pre {pkt['mac']}")
 
     def _handle_request(self, pkt: dict):
         """REQUEST → potvrdíme alebo zamietname → ACK / NAK."""
+        # client_id z opcí už len používame na logovanie, nie ako kľúč
         client_id = pkt["client_id"]
+        mac = pkt["mac"]
 
         req_opt = pkt["options"].get(OPT_REQUESTED_IP)
         if req_opt:
@@ -357,40 +361,55 @@ class DHCPUDPServer:
         # Klient si vybral iný server – uvoľníme rezerváciu
         server_id_opt = pkt["options"].get(OPT_SERVER_ID)
         if server_id_opt and server_id_opt[0] != self.config.server_ip:
-            self.pool.release(client_id)
+            self.pool.release(mac)
             return
 
-        lease = self.pool.assign(pkt["mac"], requested_ip)
+        # kľúč v poole = MAC
+        lease = self.pool.assign(mac, requested_ip)
 
         if lease and (requested_ip is None or lease.ip == requested_ip):
             reply = build_dhcp_packet(
-                msg_type   = DHCPACK,
-                xid        = pkt["xid"],
-                chaddr_raw = pkt["chaddr_raw"],
-                yiaddr     = lease.ip,
-                server_ip  = self.config.server_ip,
-                config     = self.config,
-                lease_time = lease.lease_time,
+                msg_type=DHCPACK,
+                xid=pkt["xid"],
+                chaddr_raw=pkt["chaddr_raw"],
+                yiaddr=lease.ip,
+                server_ip=self.config.server_ip,
+                config=self.config,
+                lease_time=lease.lease_time,
             )
-            print(f"[DHCP UDP] ACK → {lease.ip} pre {client_id}")
+            print(f"[DHCP UDP] ACK → {lease.ip} pre {mac}")
         else:
             reply = build_dhcp_packet(
-                msg_type   = DHCPNAK,
-                xid        = pkt["xid"],
-                chaddr_raw = pkt["chaddr_raw"],
-                yiaddr     = "0.0.0.0",
-                server_ip  = self.config.server_ip,
-                config     = self.config,
-                lease_time = 0,
+                msg_type=DHCPNAK,
+                xid=pkt["xid"],
+                chaddr_raw=pkt["chaddr_raw"],
+                yiaddr="0.0.0.0",
+                server_ip=self.config.server_ip,
+                config=self.config,
+                lease_time=0,
             )
-            print(f"[DHCP UDP] NAK pre {client_id} (IP {requested_ip} nedostupná)")
+            print(f"[DHCP UDP] NAK pre {mac} (IP {requested_ip} nedostupná)")
 
         self._send_reply(reply, pkt)
 
     def _handle_release(self, pkt: dict):
         """RELEASE – klient vracia adresu späť do poolu."""
         self.pool.release(pkt["mac"])
-        print(f"[DHCP UDP] RELEASE od {pkt['client_id']} ({pkt['ciaddr']})")
+        print(f"[DHCP UDP] RELEASE od {pkt['mac']} ({pkt['ciaddr']})")
+
+    def _handle_inform(self, pkt: dict):
+        """INFORM – klient má IP, žiada len sieťové parametre (bez lease)."""
+        reply = build_dhcp_packet(
+            msg_type   = DHCPACK,
+            xid        = pkt["xid"],
+            chaddr_raw = pkt["chaddr_raw"],
+            yiaddr     = "0.0.0.0",
+            server_ip  = self.config.server_ip,
+            config     = self.config,
+            lease_time = 0,
+        )
+        self._send_reply(reply, pkt)
+        print(f"[DHCP UDP] ACK(INFORM) pre {pkt['mac']}")
 
     def _handle_inform(self, pkt: dict):
         """INFORM – klient má IP, žiada len sieťové parametre (bez lease)."""
