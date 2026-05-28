@@ -408,7 +408,7 @@ class DHCPPool:
         return lease
 
     def _expire_leases(self):
-        """Odstráni všetky expirované lease záznamy. Volať pod zámkom."""
+        """Odstráni všetky expirované lease záznamy."""
         expired = [ip for ip, l in self._leases.items() if l.is_expired]
         for ip in expired:
             lease = self._leases.pop(ip)
