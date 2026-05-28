@@ -1,172 +1,171 @@
 """
-config.py – Konfigurácia DHCP servera a DHCP options.
-Bez externých knižníc.
+DHCP_config.py
+==============
+Správa konfigurácie DHCP servera.
+
+Uchováva sieťové parametre (IP, gateway, DNS, subnet maska),
+rozsah adresného poolu a voliteľné DHCP options (RFC 2132).
+Poskytuje metódy na čítanie, aktualizáciu a validáciu konfigurácie.
 """
 
-from DHCP_pool import validate_ip
+import socket
 
 
-# Najčastejšie DHCP options (RFC 2132) – kód: popis
 KNOWN_OPTIONS = {
-    1:   "subnet_mask",
-    3:   "router",           # predvolená brána
-    6:   "dns_servers",
-    12:  "hostname",
-    15:  "domain_name",
-    28:  "broadcast_address",
-    42:  "ntp_servers",
-    51:  "lease_time",
-    66:  "tftp_server",
-    67:  "boot_file",
-    43:  "vendor_specific",
-    119: "domain_search",
-    121: "classless_static_routes",
+    1:  {"name": "Subnet Mask",             "type": "ip"},
+    3:  {"name": "Router",                  "type": "ip"},
+    6:  {"name": "DNS Servers",             "type": "ip_list"},
+    12: {"name": "Hostname",                "type": "string"},
+    15: {"name": "Domain Name",             "type": "string"},
+    28: {"name": "Broadcast Address",       "type": "ip"},
+    42: {"name": "NTP Servers",             "type": "ip_list"},
+    51: {"name": "Lease Time",              "type": "int"},
+    66: {"name": "TFTP Server",             "type": "string"},
+    67: {"name": "Boot File",               "type": "string"},
+    43: {"name": "Vendor Specific",         "type": "string"},
+    119:{"name": "Domain Search",           "type": "string"},
+    121:{"name": "Classless Static Routes", "type": "string"},
 }
+
+PROTECTED_OPTIONS = {1, 3, 6, 51, 53, 54}
+
+
+def _is_valid_ip(ip: str) -> bool:
+    """Overí či je reťazec platnou IPv4 adresou."""
+    try:
+        socket.inet_aton(ip)
+        return ip.count(".") == 3
+    except socket.error:
+        return False
 
 
 class DHCPConfig:
     """
-    Uchováva celú konfiguráciu servera.
-    Povinné: gateway, dns, subnet_mask.
-    Voliteľné: ďalšie DHCP options.
+    Konfiguračný objekt DHCP servera.
+
+    Atribúty:
+        server_ip           -- IP adresa servera (OPT_SERVER_ID)
+        server_port         -- Port REST API
+        subnet_mask         -- Sieťová maska (option 1)
+        gateway             -- Predvolená brána (option 3)
+        dns_servers         -- Zoznam DNS serverov (option 6)
+        pool_start          -- Začiatok dynamického rozsahu
+        pool_end            -- Koniec dynamického rozsahu
+        default_lease_time  -- Predvolený čas platnosti lease v sekundách
+        max_lease_time      -- Maximálny čas platnosti lease v sekundách
     """
 
     def __init__(self):
-        # --- Povinné parametre ---
-        self.subnet_mask: str = "255.255.255.0"
-        self.gateway: str = "192.168.1.1"
-        self.dns_servers: list = ["8.8.8.8", "8.8.4.4"]
+        self.server_ip          = "192.168.1.1"
+        self.server_port        = 8080
+        self.subnet_mask        = "255.255.255.0"
+        self.gateway            = "192.168.1.1"
+        self.dns_servers        = ["8.8.8.8", "8.8.4.4"]
+        self.pool_start         = "192.168.1.100"
+        self.pool_end           = "192.168.1.200"
+        self.default_lease_time = 3600
+        self.max_lease_time     = 86400
+        self._options: dict     = {}
 
-        # --- Voliteľné DHCP options (kód -> hodnota) ---
-        self._options: dict = {}
-
-        # --- Pool parametre ---
-        self.pool_start: str = "192.168.1.100"
-        self.pool_end: str = "192.168.1.200"
-        self.default_lease_time: int = 3600   # sekundy
-        self.max_lease_time: int = 86400
-
-        # --- Server parametre ---
-        self.server_ip: str = "192.168.1.1"
-        self.server_port: int = 8080          # REST API port
-
-    # ------------------------------------------------------------------
-    # Validácia a aktualizácia konfigurácie
-    # ------------------------------------------------------------------
+    def to_dict(self) -> dict:
+        """Vráti konfiguráciu ako slovník."""
+        return {
+            "server_ip":          self.server_ip,
+            "server_port":        self.server_port,
+            "subnet_mask":        self.subnet_mask,
+            "gateway":            self.gateway,
+            "dns_servers":        self.dns_servers,
+            "pool_start":         self.pool_start,
+            "pool_end":           self.pool_end,
+            "default_lease_time": self.default_lease_time,
+            "max_lease_time":     self.max_lease_time,
+            "options":            self.all_options(),
+        }
 
     def update(self, data: dict) -> list:
         """
-        Aktualizuje konfiguráciu zo slovníka.
-        Vráti zoznam chybových hlásení (prázdny = OK).
+        Aktualizuje konfiguráciu podľa dodaného slovníka.
+
+        Validuje IP adresy a číselné hodnoty. Vráti zoznam chybových
+        hlásení – prázdny zoznam znamená úspech.
         """
         errors = []
 
-        if "gateway" in data:
-            if validate_ip(data["gateway"]):
-                self.gateway = data["gateway"]
-            else:
-                errors.append(f"Neplatná gateway: {data['gateway']}")
-
-        if "subnet_mask" in data:
-            if validate_ip(data["subnet_mask"]):
-                self.subnet_mask = data["subnet_mask"]
-            else:
-                errors.append(f"Neplatná subnet_mask: {data['subnet_mask']}")
+        for field in ["server_ip", "subnet_mask", "gateway"]:
+            if field in data:
+                if not _is_valid_ip(data[field]):
+                    errors.append(f"Neplatná IP adresa pre '{field}': {data[field]}")
+                else:
+                    setattr(self, field, data[field])
 
         if "dns_servers" in data:
-            dns_list = data["dns_servers"]
-            if not isinstance(dns_list, list):
-                dns_list = [dns_list]
-            valid_dns = [ip for ip in dns_list if validate_ip(ip)]
-            if valid_dns:
-                self.dns_servers = valid_dns
+            dns = data["dns_servers"]
+            if not isinstance(dns, list):
+                dns = [dns]
+            valid = [ip for ip in dns if _is_valid_ip(ip)]
+            if valid:
+                self.dns_servers = valid
             else:
                 errors.append("Žiaden platný DNS server nebol zadaný")
 
-        if "pool_start" in data:
-            if validate_ip(data["pool_start"]):
-                self.pool_start = data["pool_start"]
-            else:
-                errors.append(f"Neplatný pool_start: {data['pool_start']}")
-
-        if "pool_end" in data:
-            if validate_ip(data["pool_end"]):
-                self.pool_end = data["pool_end"]
-            else:
-                errors.append(f"Neplatný pool_end: {data['pool_end']}")
-
-        if "default_lease_time" in data:
-            try:
-                val = int(data["default_lease_time"])
-                if val > 0:
-                    self.default_lease_time = val
+        for field in ["pool_start", "pool_end"]:
+            if field in data:
+                if not _is_valid_ip(data[field]):
+                    errors.append(f"Neplatná IP adresa pre '{field}': {data[field]}")
                 else:
-                    errors.append("default_lease_time musí byť kladné číslo")
-            except (ValueError, TypeError):
-                errors.append("default_lease_time musí byť celé číslo")
+                    setattr(self, field, data[field])
 
-        if "max_lease_time" in data:
-            try:
-                val = int(data["max_lease_time"])
-                if val > 0:
-                    self.max_lease_time = val
-                else:
-                    errors.append("max_lease_time musí byť kladné číslo")
-            except (ValueError, TypeError):
-                errors.append("max_lease_time musí byť celé číslo")
-
-        if "server_ip" in data:
-            if validate_ip(data["server_ip"]):
-                self.server_ip = data["server_ip"]
-            else:
-                errors.append(f"Neplatná server_ip: {data['server_ip']}")
+        for field in ["default_lease_time", "max_lease_time"]:
+            if field in data:
+                try:
+                    val = int(data[field])
+                    if val > 0:
+                        setattr(self, field, val)
+                    else:
+                        errors.append(f"'{field}' musí byť kladné číslo")
+                except (ValueError, TypeError):
+                    errors.append(f"'{field}' musí byť celé číslo")
 
         return errors
 
-    # ------------------------------------------------------------------
-    # DHCP Options
-    # ------------------------------------------------------------------
+    def set_option(self, code: int, value) -> str | None:
+        """
+        Nastaví voliteľnú DHCP option podľa kódu.
 
-    def set_option(self, code: int, value):
-        """Nastaví voliteľnú DHCP option. Vráti chybový reťazec alebo None."""
-        if not isinstance(code, int) or code < 1 or code > 254:
-            return "Kód option musí byť celé číslo v rozsahu 1–254"
-        self._options[code] = value
+        Chránené options (subnet maska, gateway, DNS, lease time, typ správy,
+        server ID) nie je možné nastaviť touto metódou.
+        Vráti chybový reťazec alebo None pri úspechu.
+        """
+        if code in PROTECTED_OPTIONS:
+            name = KNOWN_OPTIONS.get(code, {}).get("name", str(code))
+            return f"Option {code} ({name}) je spravovaná automaticky"
+        if not (1 <= code <= 254):
+            return "Kód option musí byť v rozsahu 1–254"
+        info = KNOWN_OPTIONS.get(code, {})
+        self._options[str(code)] = {
+            "code":  code,
+            "name":  info.get("name", f"Option {code}"),
+            "value": value,
+        }
         return None
 
     def get_option(self, code: int):
-        return self._options.get(code)
+        """Vráti hodnotu option podľa kódu alebo None."""
+        entry = self._options.get(str(code))
+        return entry["value"] if entry else None
 
     def remove_option(self, code: int) -> bool:
-        return self._options.pop(code, None) is not None
+        """Odstráni voliteľnú option. Vráti True ak existovala."""
+        return self._options.pop(str(code), None) is not None
 
     def all_options(self) -> dict:
-        result = {}
-        for code, value in self._options.items():
-            name = KNOWN_OPTIONS.get(code, f"option_{code}")
-            result[str(code)] = {"name": name, "value": value}
-        return result
-
-    # ------------------------------------------------------------------
-    # Serializácia
-    # ------------------------------------------------------------------
-
-    def to_dict(self) -> dict:
-        return {
-            "server_ip": self.server_ip,
-            "server_port": self.server_port,
-            "subnet_mask": self.subnet_mask,
-            "gateway": self.gateway,
-            "dns_servers": self.dns_servers,
-            "pool_start": self.pool_start,
-            "pool_end": self.pool_end,
-            "default_lease_time": self.default_lease_time,
-            "max_lease_time": self.max_lease_time,
-            "options": self.all_options(),
-        }
+        """Vráti slovník všetkých nastavených voliteľných options."""
+        return dict(self._options)
 
     def known_options_list(self) -> list:
+        """Vráti zoznam všetkých známych DHCP options s ich popisom."""
         return [
-            {"code": code, "name": name}
-            for code, name in KNOWN_OPTIONS.items()
+            {"code": code, "name": info["name"], "type": info["type"]}
+            for code, info in KNOWN_OPTIONS.items()
+            if code not in PROTECTED_OPTIONS
         ]

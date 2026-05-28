@@ -1,7 +1,17 @@
 """
-DHCP_protocol.py – UDP DHCP server (port 67) bez externých knižníc.
-Implementuje stavový automat: DISCOVER → OFFER → REQUEST → ACK/NAK
-Parsuje a skladá binárne DHCP pakety podľa RFC 2131 a RFC 2132.
+DHCP_protocol.py
+================
+UDP DHCP server implementovaný bez externých knižníc (RFC 2131, RFC 2132).
+
+Zodpovedá za:
+  - parsovanie binárnych DHCP paketov (BOOTP hlavička + TLV options),
+  - skladanie odpovedí (OFFER, ACK, NAK),
+  - stavový automat: DISCOVER → OFFER → REQUEST → ACK/NAK,
+  - spracovanie RELEASE a INFORM správ,
+  - routing odpovedí (unicast / broadcast / relay agent).
+
+Identita klienta je vždy odvodená z MAC adresy v poli chaddr,
+nie z option 61 (client identifier), ktorá môže obsahovať ľubovoľné dáta.
 """
 
 import socket
@@ -9,11 +19,7 @@ import struct
 import threading
 
 
-# ---------------------------------------------------------------------------
-# Konštanty
-# ---------------------------------------------------------------------------
-
-MAGIC_COOKIE = b"\x63\x82\x53\x63"   # 99.130.83.99
+MAGIC_COOKIE = b"\x63\x82\x53\x63"
 
 DHCPDISCOVER = 1
 DHCPOFFER    = 2
@@ -46,45 +52,45 @@ OPT_END          = 255
 OPT_PAD          = 0
 
 
-# ---------------------------------------------------------------------------
-# Pomocné funkcie – IP / MAC konverzia
-# ---------------------------------------------------------------------------
-
 def ip_to_bytes(ip: str) -> bytes:
+    """Prevedie IPv4 adresu na 4 bajty (sieťové poradie)."""
     return bytes(int(p) for p in ip.strip().split("."))
 
 
 def bytes_to_ip(b: bytes) -> str:
+    """Prevedie 4 bajty na IPv4 adresu v bodkovej notácii."""
     return ".".join(str(x) for x in b[:4])
 
 
 def mac_to_str(b: bytes, hlen: int = 6) -> str:
+    """Prevedie bajty MAC adresy na reťazec formátu AA:BB:CC:DD:EE:FF."""
     return ":".join(f"{x:02X}" for x in b[:hlen])
 
 
-# ---------------------------------------------------------------------------
-# Parsovanie DHCP paketu (RFC 2131)
-# ---------------------------------------------------------------------------
-
 def parse_dhcp_packet(data: bytes) -> dict | None:
     """
-    BOOTP fixed header (236 bajtov):
+    Parsuje binárny DHCP paket podľa RFC 2131.
+
+    Štruktúra BOOTP hlavičky (236 bajtov):
       1B  op       – 1=BOOTREQUEST, 2=BOOTREPLY
       1B  htype    – typ HW adresy (1 = Ethernet)
       1B  hlen     – dĺžka HW adresy (6 pre Ethernet)
-      1B  hops
+      1B  hops     – počet prechodov cez relay agentov
       4B  xid      – transaction ID (náhodné číslo od klienta)
-      2B  secs
-      2B  flags
-      4B  ciaddr   – client IP (ak ju klient má)
-      4B  yiaddr   – your IP (adresa ktorú server prideľuje)
-      4B  siaddr   – next server IP
-      4B  giaddr   – relay agent IP
-     16B  chaddr   – client HW adresa (MAC + padding)
-     64B  sname    – server hostname
-    128B  file     – boot file name
-      4B  magic cookie
-         options (TLV formát)
+      2B  secs     – sekundy od začiatku DHCP procesu
+      2B  flags    – broadcast flag a rezervované bity
+      4B  ciaddr   – aktuálna IP klienta (ak ju má)
+      4B  yiaddr   – pridelená IP klienta (your IP)
+      4B  siaddr   – IP nasledujúceho servera
+      4B  giaddr   – IP relay agenta
+     16B  chaddr   – HW adresa klienta (MAC + padding)
+     64B  sname    – voliteľný názov servera
+    128B  file     – voliteľný názov boot súboru
+      4B  magic cookie (63:82:53:63)
+         options   – TLV formát
+
+    Returns:
+        Slovník s parsovanými poľami alebo None pri chybe/neplatnom pakete.
     """
     if len(data) < 240:
         return None
@@ -98,7 +104,6 @@ def parse_dhcp_packet(data: bytes) -> dict | None:
         yiaddr = bytes_to_ip(data[16:20])
         siaddr = bytes_to_ip(data[20:24])
         giaddr = bytes_to_ip(data[24:28])
-
         chaddr = data[28:44]
         mac    = mac_to_str(chaddr, min(hlen, 16))
 
@@ -113,9 +118,9 @@ def parse_dhcp_packet(data: bytes) -> dict | None:
             "ciaddr": ciaddr, "yiaddr": yiaddr,
             "siaddr": siaddr, "giaddr": giaddr,
             "mac": mac, "chaddr_raw": chaddr,
-            "options": options,
+            "options":   options,
             "msg_type":  options.get(OPT_MSG_TYPE, [None])[0],
-            "client_id": _extract_client_id(options, mac),
+            "client_id": mac,
         }
     except Exception:
         return None
@@ -123,24 +128,26 @@ def parse_dhcp_packet(data: bytes) -> dict | None:
 
 def _parse_options(data: bytes) -> dict:
     """
-    Parsuje DHCP options v TLV formáte (Type, Length, Value).
-    Vráti slovník {kód: zoznam hodnôt}.
+    Parsuje sekciu DHCP options v TLV formáte (Type, Length, Value).
+
+    IP adresy sú dekódované na reťazce, číselné hodnoty na int.
+    Ostatné options sú uložené ako surové bajty.
+
+    Returns:
+        Slovník {kód (int): zoznam hodnôt}.
     """
     options = {}
     i = 0
     while i < len(data):
-        code = data[i]
-        i += 1
+        code = data[i]; i += 1
         if code == OPT_END:
             break
         if code == OPT_PAD:
             continue
         if i >= len(data):
             break
-        length = data[i]
-        i += 1
-        value = data[i:i + length]
-        i += length
+        length = data[i]; i += 1
+        value  = data[i:i + length]; i += length
 
         if code == OPT_MSG_TYPE and length == 1:
             options[code] = [value[0]]
@@ -158,38 +165,40 @@ def _parse_options(data: bytes) -> dict:
     return options
 
 
-def _extract_client_id(options: dict, mac: str) -> str:
-    """
-    Pre náš server je identita klienta vždy čistá MAC adresa z chaddr.
-    Option 61 (client identifier) ignorujeme, lebo môže obsahovať rôzne
-    extra bajty (napr. DUID), čo robí bordel v client_id.
-    """
-    return mac
-
-
-# ---------------------------------------------------------------------------
-# Skladanie DHCP odpovede
-# ---------------------------------------------------------------------------
-
 def build_dhcp_packet(msg_type: int, xid: int, chaddr_raw: bytes,
                       yiaddr: str, server_ip: str, config,
                       lease_time: int) -> bytes:
     """
-    Zostaví binárny DHCP paket pre OFFER, ACK alebo NAK.
+    Zostaví binárny DHCP paket pre odpoveď servera.
+
+    Pre OFFER a ACK sú zahrnuté povinné options (lease time, subnet maska,
+    gateway, DNS) aj voliteľné options z konfigurácie. Pre NAK sa posiela
+    len typ správy a server ID.
+
+    Args:
+        msg_type:   Typ DHCP správy (DHCPOFFER, DHCPACK, DHCPNAK).
+        xid:        Transaction ID z požiadavky klienta.
+        chaddr_raw: Surové bajty MAC adresy z požiadavky (16B).
+        yiaddr:     IP adresa prideľovaná klientovi.
+        server_ip:  IP adresa servera (option 54).
+        config:     Objekt DHCPConfig s konfiguráciou.
+        lease_time: Doba platnosti lease v sekundách.
+
+    Returns:
+        Binárny DHCP paket pripravený na odoslanie.
     """
     yiaddr_b = ip_to_bytes(yiaddr) if yiaddr != "0.0.0.0" else b"\x00" * 4
 
     header  = struct.pack("!BBBBIHH", 2, 1, 6, 0, xid, 0, 0x8000)
-    header += b"\x00" * 4                          # ciaddr
-    header += yiaddr_b                              # yiaddr – pridelená IP
-    header += ip_to_bytes(server_ip)               # siaddr
-    header += b"\x00" * 4                          # giaddr
-    header += chaddr_raw[:16].ljust(16, b"\x00")   # chaddr
-    header += b"\x00" * 64                         # sname
-    header += b"\x00" * 128                        # file
+    header += b"\x00" * 4
+    header += yiaddr_b
+    header += ip_to_bytes(server_ip)
+    header += b"\x00" * 4
+    header += chaddr_raw[:16].ljust(16, b"\x00")
+    header += b"\x00" * 64
+    header += b"\x00" * 128
     header += MAGIC_COOKIE
 
-    # --- Povinné options ---
     opts  = _opt(OPT_MSG_TYPE,  bytes([msg_type]))
     opts += _opt(OPT_SERVER_ID, ip_to_bytes(server_ip))
 
@@ -200,7 +209,6 @@ def build_dhcp_packet(msg_type: int, xid: int, chaddr_raw: bytes,
         dns_bytes = b"".join(ip_to_bytes(d) for d in config.dns_servers)
         opts += _opt(OPT_DNS_SERVERS, dns_bytes)
 
-        # --- Voliteľné options z konfigurácie ---
         skip = {OPT_SUBNET_MASK, OPT_ROUTER, OPT_DNS_SERVERS,
                 OPT_LEASE_TIME,  OPT_MSG_TYPE, OPT_SERVER_ID}
         for code_str, entry in config.all_options().items():
@@ -216,12 +224,17 @@ def build_dhcp_packet(msg_type: int, xid: int, chaddr_raw: bytes,
 
 
 def _opt(code: int, value: bytes) -> bytes:
-    """Zostaví jeden TLV option."""
+    """Zostaví jeden TLV option (kód + dĺžka + hodnota)."""
     return bytes([code, len(value)]) + value
 
 
 def _encode_option_value(value) -> bytes | None:
-    """Prevedie Python hodnotu na bajty pre DHCP option."""
+    """
+    Prevedie Python hodnotu na bajty pre DHCP option.
+
+    Podporuje reťazce (ASCII), zoznamy IP adries a celé čísla (4B big-endian).
+    Vráti None ak konverzia zlyhá.
+    """
     try:
         if isinstance(value, str):
             return value.encode("ascii")
@@ -239,15 +252,23 @@ def _encode_option_value(value) -> bytes | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# UDP DHCP Server
-# ---------------------------------------------------------------------------
-
 class DHCPUDPServer:
     """
-    UDP server počúvajúci na zadanom porte (default 67).
-    Spracúva DISCOVER, REQUEST, RELEASE a INFORM správy.
+    UDP DHCP server počúvajúci na porte 67 (konfigurovateľné).
+
+    Spracúva DHCP správy:
+      - DISCOVER → OFFER   (ponuka IP adresy)
+      - REQUEST  → ACK/NAK (potvrdenie alebo zamietnutie)
+      - RELEASE            (vrátenie adresy do poolu)
+      - INFORM  → ACK      (sieťové parametre bez lease)
+
+    Každý paket je spracovaný v samostatnom vlákne.
     Port 67 vyžaduje root/sudo práva.
+    Môže byť viazaný na konkrétne sieťové rozhranie cez SO_BINDTODEVICE.
+
+    Args:
+        config: Objekt DHCPConfig s konfiguráciou servera.
+        pool:   Zdieľaný objekt DHCPPool pre správu adries.
     """
 
     def __init__(self, config, pool):
@@ -257,6 +278,15 @@ class DHCPUDPServer:
         self._running = False
 
     def start(self, host: str = "0.0.0.0", port: int = 67, interface: str = None):
+        """
+        Spustí UDP server a blokuje volajúce vlákno.
+
+        Args:
+            host:      IP adresa na ktorej server počúva (0.0.0.0 = všetky).
+            port:      UDP port (štandardne 67).
+            interface: Voliteľný názov sieťového rozhrania (napr. ens19).
+                       Funguje len na Linuxe, vyžaduje root.
+        """
         try:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -293,20 +323,28 @@ class DHCPUDPServer:
                 break
 
     def stop(self):
+        """Zastaví UDP server a zatvorí socket."""
         self._running = False
         if self._sock:
             self._sock.close()
 
     def start_in_thread(self, host: str = "0.0.0.0", port: int = 67, interface: str = None):
+        """
+        Spustí UDP server v samostatnom daemon vlákne.
+
+        Returns:
+            Objekt Thread bežiaceho servera.
+        """
         t = threading.Thread(target=self.start, args=(host, port, interface), daemon=True)
         t.start()
         return t
 
-    # ------------------------------------------------------------------
-    # Spracovanie paketov
-    # ------------------------------------------------------------------
-
     def _handle_packet(self, data: bytes, addr):
+        """
+        Parsuje príchodzí paket a odovzdá ho príslušnému handleru.
+
+        Neznáme typy správ sú ignorované.
+        """
         pkt = parse_dhcp_packet(data)
         if pkt is None:
             return
@@ -320,34 +358,40 @@ class DHCPUDPServer:
         elif msg_type == DHCPINFORM:   self._handle_inform(pkt)
 
     def _handle_discover(self, pkt: dict):
-        """DISCOVER → pridelíme adresu z poolu → OFFER."""
+        """
+        Spracuje DHCPDISCOVER – pridelí adresu z poolu a pošle OFFER.
+
+        Ak je pool plný, OFFER sa neodošle a klient nedostane adresu.
+        """
         requested_ip = None
         req_opt = pkt["options"].get(OPT_REQUESTED_IP)
         if req_opt:
             requested_ip = req_opt[0]
 
-        # kľúč v poole = čistá MAC
         lease = self.pool.assign(pkt["mac"], requested_ip)
         if lease is None:
             print(f"[DHCP UDP] OFFER: pool plný, nemôžem obsluhovať {pkt['mac']}")
             return
 
         reply = build_dhcp_packet(
-            msg_type=DHCPOFFER,
-            xid=pkt["xid"],
-            chaddr_raw=pkt["chaddr_raw"],
-            yiaddr=lease.ip,
-            server_ip=self.config.server_ip,
-            config=self.config,
-            lease_time=lease.lease_time,
+            msg_type   = DHCPOFFER,
+            xid        = pkt["xid"],
+            chaddr_raw = pkt["chaddr_raw"],
+            yiaddr     = lease.ip,
+            server_ip  = self.config.server_ip,
+            config     = self.config,
+            lease_time = lease.lease_time,
         )
         self._send_reply(reply, pkt)
         print(f"[DHCP UDP] OFFER → {lease.ip} pre {pkt['mac']}")
 
     def _handle_request(self, pkt: dict):
-        """REQUEST → potvrdíme alebo zamietname → ACK / NAK."""
-        # client_id z opcí už len používame na logovanie, nie ako kľúč
-        client_id = pkt["client_id"]
+        """
+        Spracuje DHCPREQUEST – potvrdí (ACK) alebo zamietne (NAK) adresu.
+
+        Ak klient v SERVER_ID uviedol inú IP ako náš server, rezervácia
+        sa uvoľní (klient si vybral iný server).
+        """
         mac = pkt["mac"]
 
         req_opt = pkt["options"].get(OPT_REQUESTED_IP)
@@ -358,47 +402,50 @@ class DHCPUDPServer:
         else:
             requested_ip = None
 
-        # Klient si vybral iný server – uvoľníme rezerváciu
         server_id_opt = pkt["options"].get(OPT_SERVER_ID)
         if server_id_opt and server_id_opt[0] != self.config.server_ip:
             self.pool.release(mac)
             return
 
-        # kľúč v poole = MAC
         lease = self.pool.assign(mac, requested_ip)
 
         if lease and (requested_ip is None or lease.ip == requested_ip):
             reply = build_dhcp_packet(
-                msg_type=DHCPACK,
-                xid=pkt["xid"],
-                chaddr_raw=pkt["chaddr_raw"],
-                yiaddr=lease.ip,
-                server_ip=self.config.server_ip,
-                config=self.config,
-                lease_time=lease.lease_time,
+                msg_type   = DHCPACK,
+                xid        = pkt["xid"],
+                chaddr_raw = pkt["chaddr_raw"],
+                yiaddr     = lease.ip,
+                server_ip  = self.config.server_ip,
+                config     = self.config,
+                lease_time = lease.lease_time,
             )
             print(f"[DHCP UDP] ACK → {lease.ip} pre {mac}")
         else:
             reply = build_dhcp_packet(
-                msg_type=DHCPNAK,
-                xid=pkt["xid"],
-                chaddr_raw=pkt["chaddr_raw"],
-                yiaddr="0.0.0.0",
-                server_ip=self.config.server_ip,
-                config=self.config,
-                lease_time=0,
+                msg_type   = DHCPNAK,
+                xid        = pkt["xid"],
+                chaddr_raw = pkt["chaddr_raw"],
+                yiaddr     = "0.0.0.0",
+                server_ip  = self.config.server_ip,
+                config     = self.config,
+                lease_time = 0,
             )
             print(f"[DHCP UDP] NAK pre {mac} (IP {requested_ip} nedostupná)")
 
         self._send_reply(reply, pkt)
 
     def _handle_release(self, pkt: dict):
-        """RELEASE – klient vracia adresu späť do poolu."""
+        """Spracuje DHCPRELEASE – uvoľní adresu klienta späť do poolu."""
         self.pool.release(pkt["mac"])
         print(f"[DHCP UDP] RELEASE od {pkt['mac']} ({pkt['ciaddr']})")
 
     def _handle_inform(self, pkt: dict):
-        """INFORM – klient má IP, žiada len sieťové parametre (bez lease)."""
+        """
+        Spracuje DHCPINFORM – pošle ACK so sieťovými parametrami.
+
+        Klient má vlastnú IP adresu a žiada len konfiguračné informácie.
+        Lease sa neprideľuje, yiaddr zostáva 0.0.0.0.
+        """
         reply = build_dhcp_packet(
             msg_type   = DHCPACK,
             xid        = pkt["xid"],
@@ -410,31 +457,15 @@ class DHCPUDPServer:
         )
         self._send_reply(reply, pkt)
         print(f"[DHCP UDP] ACK(INFORM) pre {pkt['mac']}")
-
-    def _handle_inform(self, pkt: dict):
-        """INFORM – klient má IP, žiada len sieťové parametre (bez lease)."""
-        reply = build_dhcp_packet(
-            msg_type   = DHCPACK,
-            xid        = pkt["xid"],
-            chaddr_raw = pkt["chaddr_raw"],
-            yiaddr     = "0.0.0.0",
-            server_ip  = self.config.server_ip,
-            config     = self.config,
-            lease_time = 0,
-        )
-        self._send_reply(reply, pkt)
-        print(f"[DHCP UDP] ACK(INFORM) pre {pkt['mac']}")
-
-    # ------------------------------------------------------------------
-    # Odoslanie odpovede
-    # ------------------------------------------------------------------
 
     def _send_reply(self, packet: bytes, req: dict):
         """
-        Routing odpovede podľa RFC 2131:
-          giaddr != 0  → relay agent   (unicast na giaddr:67)
-          ciaddr != 0  → unicast       (priamo klientovi na port 68)
-          inak         → broadcast     (255.255.255.255:68)
+        Odošle odpoveď klientovi podľa routing pravidiel RFC 2131.
+
+        Poradie prednosti:
+          1. giaddr != 0.0.0.0 → relay agent (unicast na port 67)
+          2. ciaddr != 0.0.0.0 → unicast priamo klientovi (port 68)
+          3. inak              → broadcast (255.255.255.255:68)
         """
         if req["giaddr"] != "0.0.0.0":
             dest = (req["giaddr"], 67)
@@ -442,7 +473,6 @@ class DHCPUDPServer:
             dest = (req["ciaddr"], 68)
         else:
             dest = ("255.255.255.255", 68)
-
         try:
             self._sock.sendto(packet, dest)
         except Exception as e:
